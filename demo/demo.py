@@ -40,7 +40,12 @@ def get_parser():
     )
     parser.add_argument("--webcam", action="store_true", help="Take inputs from webcam.")
     parser.add_argument("--video-input", help="Path to video file.")
-    parser.add_argument("--input", nargs="+", help="A list of space separated input images")
+    parser.add_argument(
+        "--input",
+        nargs="+",
+        help="A list of space separated input images; "
+        "or a single glob pattern such as 'directory/*.jpg'",
+    )
     parser.add_argument(
         "--output",
         help="A file or directory to save output visualizations. "
@@ -65,6 +70,7 @@ def get_parser():
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
     args = get_parser().parse_args()
+    setup_logger(name="fvcore")
     logger = setup_logger()
     logger.info("Arguments: " + str(args))
 
@@ -82,8 +88,12 @@ if __name__ == "__main__":
             start_time = time.time()
             predictions, visualized_output = demo.run_on_image(img)
             logger.info(
-                "{}: detected {} instances in {:.2f}s".format(
-                    path, len(predictions["instances"]), time.time() - start_time
+                "{}: {} in {:.2f}s".format(
+                    path,
+                    "detected {} instances".format(len(predictions["instances"]))
+                    if "instances" in predictions
+                    else "finished",
+                    time.time() - start_time,
                 )
             )
 
@@ -102,12 +112,14 @@ if __name__ == "__main__":
                     break  # esc to quit
     elif args.webcam:
         assert args.input is None, "Cannot have both --input and --webcam!"
+        assert args.output is None, "output not yet supported with --webcam!"
         cam = cv2.VideoCapture(0)
         for vis in tqdm.tqdm(demo.run_on_video(cam)):
             cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
             cv2.imshow(WINDOW_NAME, vis)
             if cv2.waitKey(1) == 27:
                 break  # esc to quit
+        cam.release()
         cv2.destroyAllWindows()
     elif args.video_input:
         video = cv2.VideoCapture(args.video_input)

@@ -1,6 +1,4 @@
 # Contributing to detectron2
-We want to make contributing to this project as easy and transparent as
-possible.
 
 ## Issues
 We use GitHub issues to track public bugs and questions.
@@ -15,7 +13,7 @@ outlined on that page and do not file a public issue.
 ## Pull Requests
 We actively welcome your pull requests.
 
-However, if you're adding any significant features, please
+However, if you're adding any significant features (e.g. > 50 lines), please
 make sure to have a corresponding issue to discuss your motivation and proposals,
 before sending a PR. We do not always accept new features, and we take the following
 factors into consideration:
@@ -32,13 +30,13 @@ If some part is not as extensible, you can also bring up the issue to make it mo
 
 When sending a PR, please do:
 
-1. Fork the repo and create your branch from `master`.
+1. If a PR contains multiple orthogonal changes, split it to several PRs.
 2. If you've added code that should be tested, add tests.
-3. If APIs are changed, update the documentation.
-4. Ensure the test suite passes.
+3. For PRs that need experiments (e.g. adding a new model or new methods),
+	 you don't need to update model zoo, but do provide experiment results in the description of the PR.
+4. If APIs are changed, update the documentation.
 5. Make sure your code lints with `./dev/linter.sh`.
-6. If a PR contains multiple orthogonal changes, split it to several PRs.
-7. If you haven't already, complete the Contributor License Agreement ("CLA").
+
 
 ## Contributor License Agreement ("CLA")
 In order to accept your pull request, we need you to submit a CLA. You only need

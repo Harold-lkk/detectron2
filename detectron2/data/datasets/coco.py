@@ -1,20 +1,19 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
-import io
-import logging
 import contextlib
-import os
 import datetime
+import io
 import json
+import logging
 import numpy as np
-
+import os
+import pycocotools.mask as mask_util
+from fvcore.common.file_io import PathManager, file_lock
+from fvcore.common.timer import Timer
 from PIL import Image
 
-from fvcore.common.timer import Timer
-from detectron2.structures import BoxMode, PolygonMasks, Boxes
-from fvcore.common.file_io import PathManager, file_lock
+from detectron2.structures import Boxes, BoxMode, PolygonMasks
 
-
-from .. import MetadataCatalog, DatasetCatalog
+from .. import DatasetCatalog, MetadataCatalog
 
 """
 This file contains functions to parse COCO-format annotations into dicts in "Detectron2 format".
@@ -23,7 +22,7 @@ This file contains functions to parse COCO-format annotations into dicts in "Det
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["load_coco_json", "load_sem_seg"]
+__all__ = ["load_coco_json", "load_sem_seg", "convert_to_coco_json"]
 
 
 def load_coco_json(json_file, image_root, dataset_name=None, extra_annotation_keys=None):
@@ -34,7 +33,7 @@ def load_coco_json(json_file, image_root, dataset_name=None, extra_annotation_ke
 
     Args:
         json_file (str): full path to the json file in COCO instances annotation format.
-        image_root (str): the directory where the images in this json file exists.
+        image_root (str or path-like): the directory where the images in this json file exists.
         dataset_name (str): the name of the dataset (e.g., coco_2017_train).
             If provided, this function will also put "thing_classes" into
             the metadata associated with this dataset.
@@ -44,7 +43,7 @@ def load_coco_json(json_file, image_root, dataset_name=None, extra_annotation_ke
             For example, the densepose annotations are loaded in this way.
 
     Returns:
-        list[dict]: a list of dicts in Detectron2 standard format. (See
+        list[dict]: a list of dicts in Detectron2 standard dataset dicts format. (See
         `Using Custom Datasets </tutorials/datasets.html>`_ )
 
     Notes:
@@ -88,7 +87,7 @@ Category ids in annotations are not in [1, #categories]! We'll apply a mapping f
         meta.thing_dataset_id_to_contiguous_id = id_map
 
     # sort indices for reproducible results
-    img_ids = sorted(list(coco_api.imgs.keys()))
+    img_ids = sorted(coco_api.imgs.keys())
     # imgs is a list of dicts, each looks something like:
     # {'license': 4,
     #  'url': 'http://farm6.staticflickr.com/5454/9413846304_881d5e5c3b_z.jpg',
@@ -152,13 +151,17 @@ Category ids in annotations are not in [1, #categories]! We'll apply a mapping f
             # can trigger this assertion.
             assert anno["image_id"] == image_id
 
-            assert anno.get("ignore", 0) == 0
+            assert anno.get("ignore", 0) == 0, '"ignore" in COCO json file is not supported.'
 
             obj = {key: anno[key] for key in ann_keys if key in anno}
 
             segm = anno.get("segmentation", None)
             if segm:  # either list[list[float]] or dict(RLE)
-                if not isinstance(segm, dict):
+                if isinstance(segm, dict):
+                    if isinstance(segm["counts"], list):
+                        # convert to compressed RLE
+                        segm = mask_util.frPyObjects(segm, *segm["size"])
+                else:
                     # filter out invalid polygons (< 3 points)
                     segm = [poly for poly in segm if len(poly) % 2 == 0 and len(poly) >= 6]
                     if len(segm) == 0:
@@ -185,11 +188,12 @@ Category ids in annotations are not in [1, #categories]! We'll apply a mapping f
         dataset_dicts.append(record)
 
     if num_instances_without_valid_segmentation > 0:
-        logger.warn(
-            "Filtered out {} instances without valid segmentation. "
-            "There might be issues in your dataset generation process.".format(
+        logger.warning(
+            "Filtered out {} instances without valid segmentation. ".format(
                 num_instances_without_valid_segmentation
             )
+            + "There might be issues in your dataset generation process. "
+            "A valid polygon should be a list[float] with even length >= 6."
         )
     return dataset_dicts
 
@@ -272,7 +276,8 @@ def load_sem_seg(gt_root, image_root, gt_ext="png", image_ext="jpg"):
 
 def convert_to_coco_dict(dataset_name):
     """
-    Convert a dataset in detectron2's standard format into COCO json format
+    Convert an instance detection/segmentation or keypoint detection dataset
+    in detectron2's standard format into COCO json format.
 
     Generic dataset description can be found here:
     https://detectron2.readthedocs.io/tutorials/datasets.html#register-a-dataset
@@ -281,17 +286,27 @@ def convert_to_coco_dict(dataset_name):
     http://cocodataset.org/#format-data
 
     Args:
-        dataset_name:
+        dataset_name (str):
             name of the source dataset
-            must be registered in DatastCatalog and in detectron2's standard format
+            Must be registered in DatastCatalog and in detectron2's standard format.
+            Must have corresponding metadata "thing_classes"
     Returns:
         coco_dict: serializable dict in COCO json format
     """
 
     dataset_dicts = DatasetCatalog.get(dataset_name)
+    metadata = MetadataCatalog.get(dataset_name)
+
+    # unmap the category mapping ids for COCO
+    if hasattr(metadata, "thing_dataset_id_to_contiguous_id"):
+        reverse_id_mapping = {v: k for k, v in metadata.thing_dataset_id_to_contiguous_id.items()}
+        reverse_id_mapper = lambda contiguous_id: reverse_id_mapping[contiguous_id]  # noqa
+    else:
+        reverse_id_mapper = lambda contiguous_id: contiguous_id  # noqa
+
     categories = [
-        {"id": id, "name": name}
-        for id, name in enumerate(MetadataCatalog.get(dataset_name).thing_classes)
+        {"id": reverse_id_mapper(id), "name": name}
+        for id, name in enumerate(metadata.thing_classes)
     ]
 
     logger.info("Converting dataset dicts into COCO format")
@@ -307,7 +322,7 @@ def convert_to_coco_dict(dataset_name):
         }
         coco_images.append(coco_image)
 
-        anns_per_image = image_dict["annotations"]
+        anns_per_image = image_dict.get("annotations", [])
         for annotation in anns_per_image:
             # create a new dict with only COCO fields
             coco_annotation = {}
@@ -322,8 +337,13 @@ def convert_to_coco_dict(dataset_name):
                 # Computing areas for instances by counting the pixels
                 segmentation = annotation["segmentation"]
                 # TODO: check segmentation type: RLE, BinaryMask or Polygon
-                polygons = PolygonMasks([segmentation])
-                area = polygons.area()[0].item()
+                if isinstance(segmentation, list):
+                    polygons = PolygonMasks([segmentation])
+                    area = polygons.area()[0].item()
+                elif isinstance(segmentation, dict):  # RLE
+                    area = mask_util.area(segmentation).item()
+                else:
+                    raise TypeError(f"Unknown segmentation type {type(segmentation)}!")
             else:
                 # Computing areas using bounding boxes
                 bbox_xy = BoxMode.convert(bbox, BoxMode.XYWH_ABS, BoxMode.XYXY_ABS)
@@ -349,9 +369,9 @@ def convert_to_coco_dict(dataset_name):
             coco_annotation["id"] = len(coco_annotations) + 1
             coco_annotation["image_id"] = coco_image["id"]
             coco_annotation["bbox"] = [round(float(x), 3) for x in bbox]
-            coco_annotation["area"] = area
-            coco_annotation["category_id"] = annotation["category_id"]
+            coco_annotation["area"] = float(area)
             coco_annotation["iscrowd"] = annotation.get("iscrowd", 0)
+            coco_annotation["category_id"] = reverse_id_mapper(annotation["category_id"])
 
             # Add optional fields
             if "keypoints" in annotation:
@@ -359,26 +379,27 @@ def convert_to_coco_dict(dataset_name):
                 coco_annotation["num_keypoints"] = num_keypoints
 
             if "segmentation" in annotation:
-                coco_annotation["segmentation"] = annotation["segmentation"]
+                seg = coco_annotation["segmentation"] = annotation["segmentation"]
+                if isinstance(seg, dict):  # RLE
+                    counts = seg["counts"]
+                    if not isinstance(counts, str):
+                        # make it json-serializable
+                        seg["counts"] = counts.decode("ascii")
 
             coco_annotations.append(coco_annotation)
 
     logger.info(
         "Conversion finished, "
-        f"num images: {len(coco_images)}, num annotations: {len(coco_annotations)}"
+        f"#images: {len(coco_images)}, #annotations: {len(coco_annotations)}"
     )
 
     info = {
         "date_created": str(datetime.datetime.now()),
         "description": "Automatically generated COCO json file for Detectron2.",
     }
-    coco_dict = {
-        "info": info,
-        "images": coco_images,
-        "annotations": coco_annotations,
-        "categories": categories,
-        "licenses": None,
-    }
+    coco_dict = {"info": info, "images": coco_images, "categories": categories, "licenses": None}
+    if len(coco_annotations) > 0:
+        coco_dict["annotations"] = coco_annotations
     return coco_dict
 
 
@@ -400,15 +421,18 @@ def convert_to_coco_json(dataset_name, output_file, allow_cached=True):
 
     PathManager.mkdirs(os.path.dirname(output_file))
     with file_lock(output_file):
-        if os.path.exists(output_file) and allow_cached:
-            logger.info(f"Cached annotations in COCO format already exist: {output_file}")
+        if PathManager.exists(output_file) and allow_cached:
+            logger.warning(
+                f"Using previously cached COCO format annotations at '{output_file}'. "
+                "You need to clear the cache file if your dataset has been modified."
+            )
         else:
-            logger.info(f"Converting dataset annotations in '{dataset_name}' to COCO format ...)")
+            logger.info(f"Converting annotations of dataset '{dataset_name}' to COCO format ...)")
             coco_dict = convert_to_coco_dict(dataset_name)
 
-            with PathManager.open(output_file, "w") as json_file:
-                logger.info(f"Caching annotations in COCO format: {output_file}")
-                json.dump(coco_dict, json_file)
+            logger.info(f"Caching COCO format annotations at '{output_file}' ...")
+            with PathManager.open(output_file, "w") as f:
+                json.dump(coco_dict, f)
 
 
 if __name__ == "__main__":

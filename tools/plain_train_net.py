@@ -1,8 +1,9 @@
+#!/usr/bin/env python
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 """
 Detectron2 training script with a plain training loop.
 
-This scripts reads a given config file and runs the training or evaluation.
+This script reads a given config file and runs the training or evaluation.
 It is an entry point that is able to train standard models in detectron2.
 
 In order to let one script support training of many models,
@@ -10,12 +11,12 @@ this script contains logic that are specific to these built-in models and theref
 may not be suitable for your own project.
 For example, your research project perhaps only needs a single "evaluator".
 
-Therefore, we recommend you to use detectron2 as an library and take
+Therefore, we recommend you to use detectron2 as a library and take
 this file as an example of how to use the library.
 You may want to write your own script with your datasets and other customizations.
 
-Compared to "train_net.py", this script supports fewer features, and also
-includes fewer abstraction.
+Compared to "train_net.py", this script supports fewer default features.
+It also includes fewer abstraction, therefore is easier to add custom logic.
 """
 
 import logging
@@ -34,7 +35,8 @@ from detectron2.data import (
 )
 from detectron2.engine import default_argument_parser, default_setup, launch
 from detectron2.evaluation import (
-    CityscapesEvaluator,
+    CityscapesInstanceEvaluator,
+    CityscapesSemSegEvaluator,
     COCOEvaluator,
     COCOPanopticEvaluator,
     DatasetEvaluators,
@@ -81,11 +83,16 @@ def get_evaluator(cfg, dataset_name, output_folder=None):
         evaluator_list.append(COCOEvaluator(dataset_name, cfg, True, output_folder))
     if evaluator_type == "coco_panoptic_seg":
         evaluator_list.append(COCOPanopticEvaluator(dataset_name, output_folder))
-    if evaluator_type == "cityscapes":
+    if evaluator_type == "cityscapes_instance":
         assert (
             torch.cuda.device_count() >= comm.get_rank()
         ), "CityscapesEvaluator currently do not work with multiple machines."
-        return CityscapesEvaluator(dataset_name)
+        return CityscapesInstanceEvaluator(dataset_name)
+    if evaluator_type == "cityscapes_sem_seg":
+        assert (
+            torch.cuda.device_count() >= comm.get_rank()
+        ), "CityscapesEvaluator currently do not work with multiple machines."
+        return CityscapesSemSegEvaluator(dataset_name)
     if evaluator_type == "pascal_voc":
         return PascalVOCDetectionEvaluator(dataset_name)
     if evaluator_type == "lvis":
@@ -144,7 +151,7 @@ def do_train(cfg, model, resume=False):
     )
 
     # compared to "train_net.py", we do not support accurate timing and
-    # precise BN here, because they are not trivial to implement
+    # precise BN here, because they are not trivial to implement in a small training loop
     data_loader = build_detection_train_loader(cfg)
     logger.info("Starting training from iteration {}".format(start_iter))
     with EventStorage(start_iter) as storage:
@@ -153,7 +160,7 @@ def do_train(cfg, model, resume=False):
             storage.step()
 
             loss_dict = model(data)
-            losses = sum(loss for loss in loss_dict.values())
+            losses = sum(loss_dict.values())
             assert torch.isfinite(losses).all(), loss_dict
 
             loss_dict_reduced = {k: v.item() for k, v in comm.reduce_dict(loss_dict).items()}
@@ -213,7 +220,7 @@ def main(args):
             model, device_ids=[comm.get_local_rank()], broadcast_buffers=False
         )
 
-    do_train(cfg, model)
+    do_train(cfg, model, resume=args.resume)
     return do_test(cfg, model)
 
 

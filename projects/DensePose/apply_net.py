@@ -1,4 +1,6 @@
+#!/usr/bin/env python3
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+
 import argparse
 import glob
 import logging
@@ -15,7 +17,7 @@ from detectron2.structures.boxes import BoxMode
 from detectron2.structures.instances import Instances
 from detectron2.utils.logger import setup_logger
 
-from densepose import add_densepose_config
+from densepose import add_densepose_config, add_hrnet_config
 from densepose.utils.logger import verbosity_to_level
 from densepose.vis.base import CompoundVisualizer
 from densepose.vis.bounding_box import ScoredBoundingBoxVisualizer
@@ -63,6 +65,12 @@ class InferenceAction(Action):
         parser.add_argument("cfg", metavar="<config>", help="Config file")
         parser.add_argument("model", metavar="<model>", help="Model file")
         parser.add_argument("input", metavar="<input>", help="Input data")
+        parser.add_argument(
+            "--opts",
+            help="Modify config options using the command-line 'KEY VALUE' pairs",
+            default=[],
+            nargs=argparse.REMAINDER,
+        )
 
     @classmethod
     def execute(cls: type, args: argparse.Namespace):
@@ -90,7 +98,9 @@ class InferenceAction(Action):
     ):
         cfg = get_cfg()
         add_densepose_config(cfg)
+        add_hrnet_config(cfg)
         cfg.merge_from_file(config_fpath)
+        cfg.merge_from_list(args.opts)
         if opts:
             cfg.merge_from_list(opts)
         cfg.MODEL.WEIGHTS = model_fpath
