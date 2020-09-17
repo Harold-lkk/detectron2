@@ -13,6 +13,10 @@ from detectron2.modeling.roi_heads import ROI_MASK_HEAD_REGISTRY
 from detectron2.modeling.roi_heads.mask_head import mask_rcnn_inference
 
 
+def step_function(self, x, y):
+    return torch.reciprocal(1 + torch.exp(-self.k * (x - y)))
+
+
 def dice_loss_func(input, target):
     smooth = 1.
     n = input.size(0)
@@ -24,33 +28,33 @@ def dice_loss_func(input, target):
     return loss.mean()
 
 
-def boundary_loss_func(boundary_logits, gtmasks):
+def db_loss_func(db_logits, gtmasks):
     """
     Args:
-        boundary_logits (Tensor): A tensor of shape (B, H, W) or (B, H, W)
+        db_logits (Tensor): A tensor of shape (B, H, W) or (B, H, W)
         gtmasks (Tensor): A tensor of shape (B, H, W) or (B, H, W)
     """
     laplacian_kernel = torch.tensor(
         [-1, -1, -1, -1, 8, -1, -1, -1, -1],
-        dtype=torch.float32, device=boundary_logits.device).reshape(1, 1, 3, 3).requires_grad_(False)
-    boundary_logits = boundary_logits.unsqueeze(1)
-    boundary_targets = F.conv2d(gtmasks.unsqueeze(1), laplacian_kernel, padding=1)
-    boundary_targets = boundary_targets.clamp(min=0)
-    boundary_targets[boundary_targets > 0.1] = 1
-    boundary_targets[boundary_targets <= 0.1] = 0
+        dtype=torch.float32, device=db_logits.device).reshape(1, 1, 3, 3).requires_grad_(False)
+    db_logits = db_logits.unsqueeze(1)
+    db_targets = F.conv2d(gtmasks.unsqueeze(1), laplacian_kernel, padding=1)
+    db_targets = db_targets.clamp(min=0)
+    db_targets[db_targets > 0.1] = 1
+    db_targets[db_targets <= 0.1] = 0
 
-    if boundary_logits.shape[-1] != boundary_targets.shape[-1]:
-        boundary_targets = F.interpolate(
-            boundary_targets, boundary_logits.shape[2:], mode='nearest')
+    if db_logits.shape[-1] != db_targets.shape[-1]:
+        db_targets = F.interpolate(
+            db_targets, db_logits.shape[2:], mode='nearest')
 
-    bce_loss = F.binary_cross_entropy_with_logits(boundary_logits, boundary_targets)
-    dice_loss = dice_loss_func(torch.sigmoid(boundary_logits), boundary_targets)
+    bce_loss = F.binary_cross_entropy_with_logits(db_logits, db_targets)
+    dice_loss = dice_loss_func(torch.sigmoid(db_logits), db_targets)
     return bce_loss + dice_loss
 
 
-def boundary_preserving_mask_loss(
+def db_preserving_mask_loss(
         pred_mask_logits,
-        pred_boundary_logits,
+        pred_db_logits,
         instances,
         vis_period=0):
     """
@@ -91,18 +95,18 @@ def boundary_preserving_mask_loss(
         gt_masks.append(gt_masks_per_image)
 
     if len(gt_masks) == 0:
-        return pred_mask_logits.sum() * 0, pred_boundary_logits.sum() * 0
+        return pred_mask_logits.sum() * 0, pred_db_logits.sum() * 0
 
     gt_masks = cat(gt_masks, dim=0)
 
     if cls_agnostic_mask:
         pred_mask_logits = pred_mask_logits[:, 0]
-        pred_boundary_logits = pred_boundary_logits[:, 0]
+        pred_db_logits = pred_db_logits[:, 0]
     else:
         indices = torch.arange(total_num_masks)
         gt_classes = cat(gt_classes, dim=0)
         pred_mask_logits = pred_mask_logits[indices, gt_classes]
-        pred_boundary_logits = pred_boundary_logits[indices, gt_classes]
+        pred_db_logits = pred_db_logits[indices, gt_classes]
 
     if gt_masks.dtype == torch.bool:
         gt_masks_bool = gt_masks
@@ -133,20 +137,20 @@ def boundary_preserving_mask_loss(
             storage.put_image(name + f" ({idx})", vis_mask)
 
     mask_loss = F.binary_cross_entropy_with_logits(pred_mask_logits, gt_masks, reduction="mean")
-    boundary_loss = boundary_loss_func(pred_boundary_logits, gt_masks)
-    return mask_loss, boundary_loss
+    db_loss = db_loss_func(pred_db_logits, gt_masks)
+    return mask_loss, db_loss
 
 
 @ROI_MASK_HEAD_REGISTRY.register()
-class BoundaryPreservingHead(nn.Module):
+class DBPreservingHead(nn.Module):
 
     def __init__(self, cfg, input_shape: ShapeSpec):
-        super(BoundaryPreservingHead, self).__init__()
+        super(DBPreservingHead, self).__init__()
 
         conv_dim = cfg.MODEL.ROI_MASK_HEAD.CONV_DIM
         num_conv = cfg.MODEL.ROI_MASK_HEAD.NUM_CONV
         conv_norm = cfg.MODEL.ROI_MASK_HEAD.NORM
-        num_boundary_conv = cfg.MODEL.BOUNDARY_MASK_HEAD.NUM_CONV
+        num_db_conv = cfg.MODEL.BOUNDARY_MASK_HEAD.NUM_CONV
         num_classes = cfg.MODEL.ROI_HEADS.NUM_CLASSES
         if cfg.MODEL.ROI_MASK_HEAD.CLS_AGNOSTIC_MASK:
             num_classes = 1
@@ -186,9 +190,9 @@ class BoundaryPreservingHead(nn.Module):
             norm=get_norm(conv_norm, conv_dim),
             activation=F.relu
         )
-        self.boundary_fcns = []
+        self.db_fcns = []
         cur_channels = input_shape.channels
-        for k in range(num_boundary_conv):
+        for k in range(num_db_conv):
             conv = Conv2d(
                 cur_channels,
                 conv_dim,
@@ -199,11 +203,11 @@ class BoundaryPreservingHead(nn.Module):
                 norm=get_norm(conv_norm, conv_dim),
                 activation=F.relu,
             )
-            self.add_module("boundary_fcn{}".format(k + 1), conv)
-            self.boundary_fcns.append(conv)
+            self.add_module("db_fcn{}".format(k + 1), conv)
+            self.db_fcns.append(conv)
             cur_channels = conv_dim
 
-        self.mask_to_boundary = Conv2d(
+        self.mask_to_db = Conv2d(
             conv_dim, conv_dim,
             kernel_size=1,
             padding=0,
@@ -213,7 +217,7 @@ class BoundaryPreservingHead(nn.Module):
             activation=F.relu
         )
 
-        self.boundary_to_mask = Conv2d(
+        self.db_to_mask = Conv2d(
             conv_dim, conv_dim,
             kernel_size=1,
             padding=0,
@@ -228,46 +232,46 @@ class BoundaryPreservingHead(nn.Module):
         )
         self.mask_predictor = Conv2d(cur_channels, num_classes, kernel_size=1, stride=1, padding=0)
 
-        self.boundary_deconv = ConvTranspose2d(
+        self.db_deconv = ConvTranspose2d(
             conv_dim, conv_dim, kernel_size=2, stride=2, padding=0
         )
-        self.boundary_predictor = Conv2d(cur_channels, num_classes, kernel_size=1, stride=1, padding=0)
+        self.db_predictor = Conv2d(cur_channels, num_classes, kernel_size=1, stride=1, padding=0)
 
-        for layer in self.mask_fcns + self.boundary_fcns +\
-                     [self.mask_deconv, self.boundary_deconv, self.boundary_to_mask, self.mask_to_boundary,
+        for layer in self.mask_fcns + self.db_fcns +\
+                     [self.mask_deconv, self.db_deconv, self.db_to_mask, self.mask_to_db,
                       self.mask_final_fusion, self.downsample]:
             weight_init.c2_msra_fill(layer)
         # use normal distribution initialization for mask prediction layer
         nn.init.normal_(self.mask_predictor.weight, std=0.001)
-        nn.init.normal_(self.boundary_predictor.weight, std=0.001)
+        nn.init.normal_(self.db_predictor.weight, std=0.001)
         if self.mask_predictor.bias is not None:
             nn.init.constant_(self.mask_predictor.bias, 0)
-        if self.boundary_predictor.bias is not None:
-            nn.init.constant_(self.boundary_predictor.bias, 0)
+        if self.db_predictor.bias is not None:
+            nn.init.constant_(self.db_predictor.bias, 0)
 
-    def forward(self, mask_features, boundary_features, instances: List[Instances]):
+    def forward(self, mask_features, db_features, instances: List[Instances]):
         for layer in self.mask_fcns:
             mask_features = layer(mask_features)
         # downsample
-        boundary_features = self.downsample(boundary_features)
-        # mask to boundary fusion
-        boundary_features = boundary_features + self.mask_to_boundary(mask_features)
-        for layer in self.boundary_fcns:
-            boundary_features = layer(boundary_features)
-        # boundary to mask fusion
-        mask_features = self.boundary_to_mask(boundary_features) + mask_features
+        db_features = self.downsample(db_features)
+        # mask to db fusion
+        db_features = db_features + self.mask_to_db(mask_features)
+        for layer in self.db_fcns:
+            db_features = layer(db_features)
+        # db to mask fusion
+        mask_features = self.db_to_mask(db_features) + mask_features
         mask_features = self.mask_final_fusion(mask_features)
         # mask prediction
         mask_features = F.relu(self.mask_deconv(mask_features))
         mask_logits = self.mask_predictor(mask_features)
-        # boundary prediction
-        boundary_features = F.relu(self.boundary_deconv(boundary_features))
-        boundary_logits = self.boundary_predictor(boundary_features)
+        # db prediction
+        db_features = F.relu(self.db_deconv(db_features))
+        db_logits = self.db_predictor(db_features)
         if self.training:
-            loss_mask, loss_boundary = boundary_preserving_mask_loss(
-                mask_logits, boundary_logits, instances)
+            loss_mask, loss_db = db_preserving_mask_loss(
+                mask_logits, db_logits, instances)
             return {"loss_mask": loss_mask,
-                    "loss_boundary": loss_boundary}
+                    "loss_db": loss_db}
         else:
             mask_rcnn_inference(mask_logits, instances)
             return instances

@@ -8,7 +8,6 @@ import torch
 from detectron2.layers import ShapeSpec
 from detectron2.structures import Instances
 
-
 from detectron2.modeling import ROI_HEADS_REGISTRY
 from detectron2.modeling.roi_heads import StandardROIHeads
 from detectron2.modeling.poolers import ROIPooler
@@ -17,8 +16,7 @@ from detectron2.modeling.roi_heads.roi_heads import select_foreground_proposals
 
 
 @ROI_HEADS_REGISTRY.register()
-class BoundaryROIHeads(StandardROIHeads):
-
+class DBROIHeads(StandardROIHeads):
     def __init__(self, cfg, input_shape):
         super().__init__(cfg, input_shape)
         self._init_mask_head(cfg, input_shape)
@@ -28,37 +26,37 @@ class BoundaryROIHeads(StandardROIHeads):
         if not self.mask_on:
             return {}
         # fmt: off
-        in_features       = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        in_features = cfg.MODEL.ROI_HEADS.IN_FEATURES
         pooler_resolution = cfg.MODEL.ROI_MASK_HEAD.POOLER_RESOLUTION
-        pooler_scales     = tuple(1.0 / input_shape[k].stride for k in in_features)
-        sampling_ratio    = cfg.MODEL.ROI_MASK_HEAD.POOLER_SAMPLING_RATIO
-        pooler_type       = cfg.MODEL.ROI_MASK_HEAD.POOLER_TYPE
+        pooler_scales = tuple(1.0 / input_shape[k].stride for k in in_features)
+        sampling_ratio = cfg.MODEL.ROI_MASK_HEAD.POOLER_SAMPLING_RATIO
+        pooler_type = cfg.MODEL.ROI_MASK_HEAD.POOLER_TYPE
         # edge poolers
-        boundary_resolution     = cfg.MODEL.BOUNDARY_MASK_HEAD.POOLER_RESOLUTION
-        boundary_in_features    = cfg.MODEL.BOUNDARY_MASK_HEAD.IN_FEATURES
-        boundary_scales         = tuple(1.0 / input_shape[k].stride for k in boundary_in_features)
+        db_resolution = cfg.MODEL.DB_MASK_HEAD.POOLER_RESOLUTION
+        db_in_features = cfg.MODEL.DB_MASK_HEAD.IN_FEATURES
+        db_scales = tuple(1.0 / input_shape[k].stride for k in db_in_features)
         # fmt: on
 
         in_channels = [input_shape[f].channels for f in in_features][0]
 
         self.mask_in_features = in_features
-        self.boundary_in_features = boundary_in_features
+        self.db_in_features = db_in_features
         # ret = {"mask_in_features": in_features}
-        self.mask_pooler= ROIPooler(
+        self.mask_pooler = ROIPooler(
             output_size=pooler_resolution,
             scales=pooler_scales,
             sampling_ratio=sampling_ratio,
             pooler_type=pooler_type,
         )
-        self.boundary_pooler = ROIPooler(
-            output_size=boundary_resolution,
-            scales=boundary_scales,
-            sampling_ratio=sampling_ratio,
-            pooler_type=pooler_type
-        )
+        self.db_pooler = ROIPooler(output_size=db_resolution,
+                                   scales=db_scales,
+                                   sampling_ratio=sampling_ratio,
+                                   pooler_type=pooler_type)
         self.mask_head = build_mask_head(
-            cfg, ShapeSpec(channels=in_channels, width=pooler_resolution, height=pooler_resolution)
-        )
+            cfg,
+            ShapeSpec(channels=in_channels,
+                      width=pooler_resolution,
+                      height=pooler_resolution))
 
     def _forward_mask(
         self, features: Dict[str, torch.Tensor], instances: List[Instances]
@@ -81,17 +79,18 @@ class BoundaryROIHeads(StandardROIHeads):
             return {} if self.training else instances
 
         mask_features = [features[f] for f in self.mask_in_features]
-        boundary_features = [features[f] for f in self.boundary_in_features]
+        db_features = [features[f] for f in self.db_in_features]
 
         if self.training:
             # The loss is only defined on positive proposals.
-            proposals, _ = select_foreground_proposals(instances, self.num_classes)
+            proposals, _ = select_foreground_proposals(instances,
+                                                       self.num_classes)
             proposal_boxes = [x.proposal_boxes for x in proposals]
             mask_features = self.mask_pooler(mask_features, proposal_boxes)
-            boundary_features = self.boundary_pooler(boundary_features, proposal_boxes)
-            return self.mask_head(mask_features, boundary_features, proposals)
+            db_features = self.db_pooler(db_features, proposal_boxes)
+            return self.mask_head(mask_features, db_features, proposals)
         else:
             pred_boxes = [x.pred_boxes for x in instances]
             mask_features = self.mask_pooler(mask_features, pred_boxes)
-            boundary_features = self.boundary_pooler(boundary_features, pred_boxes)
-            return self.mask_head(mask_features, boundary_features, instances)
+            db_features = self.db_pooler(db_features, pred_boxes)
+            return self.mask_head(mask_features, db_features, instances)
