@@ -31,7 +31,7 @@ class DBROIHeads(StandardROIHeads):
         pooler_scales = tuple(1.0 / input_shape[k].stride for k in in_features)
         sampling_ratio = cfg.MODEL.ROI_MASK_HEAD.POOLER_SAMPLING_RATIO
         pooler_type = cfg.MODEL.ROI_MASK_HEAD.POOLER_TYPE
-        # edge poolers
+        # db poolers
         db_resolution = cfg.MODEL.DB_MASK_HEAD.POOLER_RESOLUTION
         db_in_features = cfg.MODEL.DB_MASK_HEAD.IN_FEATURES
         db_scales = tuple(1.0 / input_shape[k].stride for k in db_in_features)
