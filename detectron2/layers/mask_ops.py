@@ -3,6 +3,8 @@ import numpy as np
 import torch
 from PIL import Image
 from torch.nn import functional as F
+# from torchvision.utils import save_image
+import cv2
 
 __all__ = ["paste_masks_in_image"]
 
@@ -126,6 +128,11 @@ def paste_masks_in_image(masks, boxes, image_shape, threshold=0.5):
         )
 
         if threshold >= 0:
+            # test for lkk
+            masks_chunk_lkk = ((masks_chunk >= threshold).to(dtype=torch.uint8) * 255).to('cpu').numpy()
+            for i in range(masks_chunk_lkk.shape[0]):
+                cv2.imwrite("/media/liukuikun/work/repository/detectron2/mid/{}_{}.jpg".format(str(i), str(threshold).split('.')[-1]), masks_chunk_lkk[i])
+            
             masks_chunk = (masks_chunk >= threshold).to(dtype=torch.bool)
         else:
             # for visualization and debugging

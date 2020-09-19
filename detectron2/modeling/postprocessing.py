@@ -8,7 +8,7 @@ from detectron2.utils.memory import retry_if_cuda_oom
 
 
 # perhaps should rename to "resize_instance"
-def detector_postprocess(results, output_height, output_width, mask_threshold=0.5):
+def detector_postprocess(results, output_height, output_width, mask_threshold=0.9):
     """
     Resize the output instances.
     The input images are often resized when entering an object detector.

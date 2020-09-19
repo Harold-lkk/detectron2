@@ -26,6 +26,7 @@ def setup_cfg(args):
     cfg.MODEL.RETINANET.SCORE_THRESH_TEST = args.confidence_threshold
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = args.confidence_threshold
     cfg.MODEL.PANOPTIC_FPN.COMBINE.INSTANCES_CONFIDENCE_THRESH = args.confidence_threshold
+    cfg.MODEL.WEIGHTS = "/media/liukuikun/work/repository/detectron2/checkpoint/pretrained/mask_rcnn_R_50_FPN_1x.pkl"
     cfg.freeze()
     return cfg
 
@@ -34,7 +35,7 @@ def get_parser():
     parser = argparse.ArgumentParser(description="Detectron2 demo for builtin configs")
     parser.add_argument(
         "--config-file",
-        default="configs/quick_schedules/mask_rcnn_R_50_FPN_inference_acc_test.yaml",
+        default="configs/COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml",
         metavar="FILE",
         help="path to config file",
     )
@@ -42,6 +43,7 @@ def get_parser():
     parser.add_argument("--video-input", help="Path to video file.")
     parser.add_argument(
         "--input",
+        default=["/media/liukuikun/work/repository/detectron2/datasets/coco/val2017/000000002153.jpg"],
         nargs="+",
         help="A list of space separated input images; "
         "or a single glob pattern such as 'directory/*.jpg'",

@@ -13,8 +13,48 @@ from detectron2.modeling.roi_heads import ROI_MASK_HEAD_REGISTRY
 from detectron2.modeling.roi_heads.mask_head import mask_rcnn_inference
 
 
-def step_function(self, x, y):
-    return torch.reciprocal(1 + torch.exp(-self.k * (x - y)))
+def mask_rcnn_inference(pred_mask_logits: torch.Tensor, pred_instances: List[Instances]):
+    """
+    Convert pred_mask_logits to estimated foreground probability masks while also
+    extracting only the masks for the predicted classes in pred_instances. For each
+    predicted box, the mask of the same class is attached to the instance by adding a
+    new "pred_masks" field to pred_instances.
+
+    Args:
+        pred_mask_logits (Tensor): A tensor of shape (B, C, Hmask, Wmask) or (B, 1, Hmask, Wmask)
+            for class-specific or class-agnostic, where B is the total number of predicted masks
+            in all images, C is the number of foreground classes, and Hmask, Wmask are the height
+            and width of the mask predictions. The values are logits.
+        pred_instances (list[Instances]): A list of N Instances, where N is the number of images
+            in the batch. Each Instances must have field "pred_classes".
+
+    Returns:
+        None. pred_instances will contain an extra "pred_masks" field storing a mask of size (Hmask,
+            Wmask) for predicted class. Note that the masks are returned as a soft (non-quantized)
+            masks the resolution predicted by the network; post-processing steps, such as resizing
+            the predicted masks to the original image resolution and/or binarizing them, is left
+            to the caller.
+    """
+    cls_agnostic_mask = pred_mask_logits.size(1) == 1
+
+    if cls_agnostic_mask:
+        mask_probs_pred = pred_mask_logits.sigmoid()
+    else:
+        # Select masks corresponding to the predicted classes
+        num_masks = pred_mask_logits.shape[0]
+        class_pred = cat([i.pred_classes for i in pred_instances])
+        indices = torch.arange(num_masks, device=class_pred.device)
+        mask_probs_pred = pred_mask_logits[indices, class_pred][:, None].sigmoid()
+    # mask_probs_pred.shape: (B, 1, Hmask, Wmask)
+
+    num_boxes_per_image = [len(i) for i in pred_instances]
+    mask_probs_pred = mask_probs_pred.split(num_boxes_per_image, dim=0)
+
+    for prob, instances in zip(mask_probs_pred, pred_instances):
+        instances.pred_masks = prob  # (1, Hmask, Wmask)
+
+
+
 
 
 def dice_loss_func(input, target):
@@ -53,31 +93,33 @@ def db_loss_func(db_logits, gtmasks):
 
 
 def db_preserving_mask_loss(
-        pred_mask_logits,
-        pred_db_logits,
+        binary_logits,
+        threshold_logits,
+        thresh_binary,
         instances,
+        threshold_on=False,
         vis_period=0):
     """
     Compute the mask prediction loss defined in the Mask R-CNN paper.
 
     Args:
-        pred_mask_logits (Tensor): A tensor of shape (B, C, Hmask, Wmask) or (B, 1, Hmask, Wmask)
+        binary_logits (Tensor): A tensor of shape (B, C, Hmask, Wmask) or (B, 1, Hmask, Wmask)
             for class-specific or class-agnostic, where B is the total number of predicted masks
             in all images, C is the number of foreground classes, and Hmask, Wmask are the height
             and width of the mask predictions. The values are logits.
         instances (list[Instances]): A list of N Instances, where N is the number of images
             in the batch. These instances are in 1:1
-            correspondence with the pred_mask_logits. The ground-truth labels (class, box, mask,
+            correspondence with the binary_logits. The ground-truth labels (class, box, mask,
             ...) associated with each instance are stored in fields.
         vis_period (int): the period (in steps) to dump visualization.
 
     Returns:
         mask_loss (Tensor): A scalar tensor containing the loss.
     """
-    cls_agnostic_mask = pred_mask_logits.size(1) == 1
-    total_num_masks = pred_mask_logits.size(0)
-    mask_side_len = pred_mask_logits.size(2)
-    assert pred_mask_logits.size(2) == pred_mask_logits.size(3), "Mask prediction must be square!"
+    cls_agnostic_mask = binary_logits.size(1) == 1
+    total_num_masks = binary_logits.size(0)
+    mask_side_len = binary_logits.size(2)
+    assert binary_logits.size(2) == binary_logits.size(3), "Mask prediction must be square!"
 
     gt_classes = []
     gt_masks = []
@@ -90,22 +132,22 @@ def db_preserving_mask_loss(
 
         gt_masks_per_image = instances_per_image.gt_masks.crop_and_resize(
             instances_per_image.proposal_boxes.tensor, mask_side_len
-        ).to(device=pred_mask_logits.device)
+        ).to(device=binary_logits.device)
         # A tensor of shape (N, M, M), N=#instances in the image; M=mask_side_len
         gt_masks.append(gt_masks_per_image)
 
     if len(gt_masks) == 0:
-        return pred_mask_logits.sum() * 0, pred_db_logits.sum() * 0
+        return binary_logits.sum() * 0, pred_db_logits.sum() * 0
 
     gt_masks = cat(gt_masks, dim=0)
 
     if cls_agnostic_mask:
-        pred_mask_logits = pred_mask_logits[:, 0]
+        binary_logits = binary_logits[:, 0]
         pred_db_logits = pred_db_logits[:, 0]
     else:
         indices = torch.arange(total_num_masks)
         gt_classes = cat(gt_classes, dim=0)
-        pred_mask_logits = pred_mask_logits[indices, gt_classes]
+        binary_logits = binary_logits[indices, gt_classes]
         pred_db_logits = pred_db_logits[indices, gt_classes]
 
     if gt_masks.dtype == torch.bool:
@@ -116,7 +158,7 @@ def db_preserving_mask_loss(
     gt_masks = gt_masks.to(dtype=torch.float32)
 
     # Log the training accuracy (using gt classes and 0.5 threshold)
-    mask_incorrect = (pred_mask_logits > 0.0) != gt_masks_bool
+    mask_incorrect = (binary_logits > 0.0) != gt_masks_bool
     mask_accuracy = 1 - (mask_incorrect.sum().item() / max(mask_incorrect.numel(), 1.0))
     num_positive = gt_masks_bool.sum().item()
     false_positive = (mask_incorrect & ~gt_masks_bool).sum().item() / max(
@@ -129,14 +171,14 @@ def db_preserving_mask_loss(
     storage.put_scalar("mask_rcnn/false_positive", false_positive)
     storage.put_scalar("mask_rcnn/false_negative", false_negative)
     if vis_period > 0 and storage.iter % vis_period == 0:
-        pred_masks = pred_mask_logits.sigmoid()
+        pred_masks = binary_logits.sigmoid()
         vis_masks = torch.cat([pred_masks, gt_masks], axis=2)
         name = "Left: mask prediction;   Right: mask GT"
         for idx, vis_mask in enumerate(vis_masks):
             vis_mask = torch.stack([vis_mask] * 3, axis=0)
             storage.put_image(name + f" ({idx})", vis_mask)
 
-    mask_loss = F.binary_cross_entropy_with_logits(pred_mask_logits, gt_masks, reduction="mean")
+    mask_loss = F.binary_cross_entropy_with_logits(binary_logits, gt_masks, reduction="mean")
     db_loss = db_loss_func(pred_db_logits, gt_masks)
     return mask_loss, db_loss
 
@@ -154,6 +196,8 @@ class DBPreservingHead(nn.Module):
         num_classes = cfg.MODEL.ROI_HEADS.NUM_CLASSES
         if cfg.MODEL.ROI_MASK_HEAD.CLS_AGNOSTIC_MASK:
             num_classes = 1
+        self.adaptive = cfg.MODEL.DB_MASK_HEAD.DB_MASK_HEAD
+        self.fusion = None
 
         self.mask_fcns = []
         cur_channels = input_shape.channels
@@ -263,15 +307,21 @@ class DBPreservingHead(nn.Module):
         mask_features = self.mask_final_fusion(mask_features)
         # mask prediction
         mask_features = F.relu(self.mask_deconv(mask_features))
-        mask_logits = self.mask_predictor(mask_features)
+        binary_logits = self.mask_predictor(mask_features).sigmoid()
         # db prediction
         db_features = F.relu(self.db_deconv(db_features))
-        db_logits = self.db_predictor(db_features)
+        threshold_logits = self.db_predictor(db_features).sigmoid()
+        
+        thresh_binary = self.step_function(binary_logits, threshold_logits)
         if self.training:
             loss_mask, loss_db = db_preserving_mask_loss(
-                mask_logits, db_logits, instances)
+                binary_logits, threshold_logits, thresh_binary, instances)
             return {"loss_mask": loss_mask,
                     "loss_db": loss_db}
         else:
             mask_rcnn_inference(mask_logits, instances)
             return instances
+
+
+def step_function(self, x, y):
+    return torch.reciprocal(1 + torch.exp(-self.k * (x - y)))

@@ -10,7 +10,8 @@ MODEL:
     NAME: "BoundaryPreservingHead"
     NUM_CONV: 4
     POOLER_RESOLUTION: 14
-  BOUNDARY_MASK_HEAD:
+  DB_MASK_HEAD:
     POOLER_RESOLUTION: 28
     IN_FEATURES: ["p2"]
     NUM_CONV: 2
+    ADAPTIVE: True

@@ -46,3 +46,4 @@ wheels/
 !/datasets/*.*
 /projects/*/datasets
 /models
+/checkpoint

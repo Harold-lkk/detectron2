@@ -16,4 +16,4 @@ SOLVER:
   BASE_LR: 0.02
   STEPS: (60000, 80000)
   MAX_ITER: 90000
-OUTPUT_DIR: "output/bmask_rcnn_r50_1x"
+OUTPUT_DIR: "output/dbmask_rcnn_r50_1x"
