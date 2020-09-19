@@ -10,33 +10,11 @@ from detectron2.structures import Instances
 from detectron2.utils.events import get_event_storage
 
 from detectron2.modeling.roi_heads import ROI_MASK_HEAD_REGISTRY
-from detectron2.modeling.roi_heads.mask_head import mask_rcnn_inference
+# from detectron2.modeling.roi_heads.mask_head import mask_rcnn_inference
 
 
 def mask_rcnn_inference(pred_mask_logits: torch.Tensor, pred_instances: List[Instances]):
-    """
-    Convert pred_mask_logits to estimated foreground probability masks while also
-    extracting only the masks for the predicted classes in pred_instances. For each
-    predicted box, the mask of the same class is attached to the instance by adding a
-    new "pred_masks" field to pred_instances.
-
-    Args:
-        pred_mask_logits (Tensor): A tensor of shape (B, C, Hmask, Wmask) or (B, 1, Hmask, Wmask)
-            for class-specific or class-agnostic, where B is the total number of predicted masks
-            in all images, C is the number of foreground classes, and Hmask, Wmask are the height
-            and width of the mask predictions. The values are logits.
-        pred_instances (list[Instances]): A list of N Instances, where N is the number of images
-            in the batch. Each Instances must have field "pred_classes".
-
-    Returns:
-        None. pred_instances will contain an extra "pred_masks" field storing a mask of size (Hmask,
-            Wmask) for predicted class. Note that the masks are returned as a soft (non-quantized)
-            masks the resolution predicted by the network; post-processing steps, such as resizing
-            the predicted masks to the original image resolution and/or binarizing them, is left
-            to the caller.
-    """
     cls_agnostic_mask = pred_mask_logits.size(1) == 1
-
     if cls_agnostic_mask:
         mask_probs_pred = pred_mask_logits.sigmoid()
     else:
@@ -52,9 +30,6 @@ def mask_rcnn_inference(pred_mask_logits: torch.Tensor, pred_instances: List[Ins
 
     for prob, instances in zip(mask_probs_pred, pred_instances):
         instances.pred_masks = prob  # (1, Hmask, Wmask)
-
-
-
 
 
 def dice_loss_func(input, target):
@@ -74,9 +49,10 @@ def db_loss_func(db_logits, gtmasks):
         db_logits (Tensor): A tensor of shape (B, H, W) or (B, H, W)
         gtmasks (Tensor): A tensor of shape (B, H, W) or (B, H, W)
     """
-    laplacian_kernel = torch.tensor(
-        [-1, -1, -1, -1, 8, -1, -1, -1, -1],
-        dtype=torch.float32, device=db_logits.device).reshape(1, 1, 3, 3).requires_grad_(False)
+    laplacian_kernel = torch.tensor([-1, -1, -1, -1, 8, -1, -1, -1, -1],
+                                    dtype=torch.float32,
+                                    device=db_logits.device).reshape(
+                                        1, 1, 3, 3).requires_grad_(False)
     db_logits = db_logits.unsqueeze(1)
     db_targets = F.conv2d(gtmasks.unsqueeze(1), laplacian_kernel, padding=1)
     db_targets = db_targets.clamp(min=0)
@@ -84,42 +60,26 @@ def db_loss_func(db_logits, gtmasks):
     db_targets[db_targets <= 0.1] = 0
 
     if db_logits.shape[-1] != db_targets.shape[-1]:
-        db_targets = F.interpolate(
-            db_targets, db_logits.shape[2:], mode='nearest')
+        db_targets = F.interpolate(db_targets,
+                                   db_logits.shape[2:],
+                                   mode='nearest')
 
-    bce_loss = F.binary_cross_entropy_with_logits(db_logits, db_targets)
-    dice_loss = dice_loss_func(torch.sigmoid(db_logits), db_targets)
+    bce_loss = F.binary_cross_entropy(db_logits, db_targets)
+    dice_loss = dice_loss_func(db_logits, db_targets)
     return bce_loss + dice_loss
 
 
-def db_preserving_mask_loss(
-        binary_logits,
-        threshold_logits,
-        thresh_binary,
-        instances,
-        threshold_on=False,
-        vis_period=0):
-    """
-    Compute the mask prediction loss defined in the Mask R-CNN paper.
-
-    Args:
-        binary_logits (Tensor): A tensor of shape (B, C, Hmask, Wmask) or (B, 1, Hmask, Wmask)
-            for class-specific or class-agnostic, where B is the total number of predicted masks
-            in all images, C is the number of foreground classes, and Hmask, Wmask are the height
-            and width of the mask predictions. The values are logits.
-        instances (list[Instances]): A list of N Instances, where N is the number of images
-            in the batch. These instances are in 1:1
-            correspondence with the binary_logits. The ground-truth labels (class, box, mask,
-            ...) associated with each instance are stored in fields.
-        vis_period (int): the period (in steps) to dump visualization.
-
-    Returns:
-        mask_loss (Tensor): A scalar tensor containing the loss.
-    """
-    cls_agnostic_mask = binary_logits.size(1) == 1
-    total_num_masks = binary_logits.size(0)
-    mask_side_len = binary_logits.size(2)
-    assert binary_logits.size(2) == binary_logits.size(3), "Mask prediction must be square!"
+def db_preserving_mask_loss(probability_logits,
+                            threshold_logits,
+                            thresh_binary,
+                            instances,
+                            threshold_on=False,
+                            vis_period=0):
+    cls_agnostic_mask = probability_logits.size(1) == 1
+    total_num_masks = thresh_binary.size(0)
+    mask_side_len = probability_logits.size(2)
+    assert probability_logits.size(2) == probability_logits.size(
+        3), "Mask prediction must be square!"
 
     gt_classes = []
     gt_masks = []
@@ -127,28 +87,32 @@ def db_preserving_mask_loss(
         if len(instances_per_image) == 0:
             continue
         if not cls_agnostic_mask:
-            gt_classes_per_image = instances_per_image.gt_classes.to(dtype=torch.int64)
+            gt_classes_per_image = instances_per_image.gt_classes.to(
+                dtype=torch.int64)
             gt_classes.append(gt_classes_per_image)
 
         gt_masks_per_image = instances_per_image.gt_masks.crop_and_resize(
-            instances_per_image.proposal_boxes.tensor, mask_side_len
-        ).to(device=binary_logits.device)
+            instances_per_image.proposal_boxes.tensor,
+            mask_side_len).to(device=probability_logits.device)
         # A tensor of shape (N, M, M), N=#instances in the image; M=mask_side_len
         gt_masks.append(gt_masks_per_image)
 
     if len(gt_masks) == 0:
-        return binary_logits.sum() * 0, pred_db_logits.sum() * 0
+        return probability_logits.sum() * 0, threshold_logits.sum(
+        ) * 0, thresh_binary.sum() * 0
 
     gt_masks = cat(gt_masks, dim=0)
 
     if cls_agnostic_mask:
-        binary_logits = binary_logits[:, 0]
-        pred_db_logits = pred_db_logits[:, 0]
+        probability_logits = probability_logits[:, 0]
+        threshold_logits = threshold_logits[:, 0]
+        thresh_binary = thresh_binary[:, 0]
     else:
         indices = torch.arange(total_num_masks)
         gt_classes = cat(gt_classes, dim=0)
-        binary_logits = binary_logits[indices, gt_classes]
-        pred_db_logits = pred_db_logits[indices, gt_classes]
+        probability_logits = probability_logits[indices, gt_classes]
+        threshold_logits = threshold_logits[indices, gt_classes]
+        thresh_binary = thresh_binary[indices, gt_classes]
 
     if gt_masks.dtype == torch.bool:
         gt_masks_bool = gt_masks
@@ -158,34 +122,42 @@ def db_preserving_mask_loss(
     gt_masks = gt_masks.to(dtype=torch.float32)
 
     # Log the training accuracy (using gt classes and 0.5 threshold)
-    mask_incorrect = (binary_logits > 0.0) != gt_masks_bool
-    mask_accuracy = 1 - (mask_incorrect.sum().item() / max(mask_incorrect.numel(), 1.0))
+    mask_incorrect = (thresh_binary > 0.0) != gt_masks_bool
+    mask_accuracy = 1 - (mask_incorrect.sum().item() /
+                         max(mask_incorrect.numel(), 1.0))
     num_positive = gt_masks_bool.sum().item()
     false_positive = (mask_incorrect & ~gt_masks_bool).sum().item() / max(
-        gt_masks_bool.numel() - num_positive, 1.0
-    )
-    false_negative = (mask_incorrect & gt_masks_bool).sum().item() / max(num_positive, 1.0)
+        gt_masks_bool.numel() - num_positive, 1.0)
+    false_negative = (mask_incorrect & gt_masks_bool).sum().item() / max(
+        num_positive, 1.0)
 
     storage = get_event_storage()
     storage.put_scalar("mask_rcnn/accuracy", mask_accuracy)
     storage.put_scalar("mask_rcnn/false_positive", false_positive)
     storage.put_scalar("mask_rcnn/false_negative", false_negative)
     if vis_period > 0 and storage.iter % vis_period == 0:
-        pred_masks = binary_logits.sigmoid()
+        pred_masks = thresh_binary
         vis_masks = torch.cat([pred_masks, gt_masks], axis=2)
         name = "Left: mask prediction;   Right: mask GT"
         for idx, vis_mask in enumerate(vis_masks):
             vis_mask = torch.stack([vis_mask] * 3, axis=0)
             storage.put_image(name + f" ({idx})", vis_mask)
 
-    mask_loss = F.binary_cross_entropy_with_logits(binary_logits, gt_masks, reduction="mean")
-    db_loss = db_loss_func(pred_db_logits, gt_masks)
-    return mask_loss, db_loss
+    probability_loss = F.binary_cross_entropy(probability_logits,
+                                              gt_masks,
+                                              reduction="mean")
+    if threshold_on:
+        threshold_loss = db_loss_func(threshold_logits, gt_masks)
+    else:
+        threshold_loss = threshold_logits.sum() * 0
+    thresh_binary_loss = F.binary_cross_entropy(thresh_binary,
+                                                gt_masks,
+                                                reduction="mean")
+    return probability_loss, threshold_loss, thresh_binary_loss
 
 
 @ROI_MASK_HEAD_REGISTRY.register()
 class DBPreservingHead(nn.Module):
-
     def __init__(self, cfg, input_shape: ShapeSpec):
         super(DBPreservingHead, self).__init__()
 
@@ -216,24 +188,23 @@ class DBPreservingHead(nn.Module):
             self.mask_fcns.append(conv)
             cur_channels = conv_dim
 
-        self.mask_final_fusion = Conv2d(
-            conv_dim, conv_dim,
-            kernel_size=3,
-            padding=1,
-            stride=1,
-            bias=not conv_norm,
-            norm=get_norm(conv_norm, conv_dim),
-            activation=F.relu)
+        self.mask_final_fusion = Conv2d(conv_dim,
+                                        conv_dim,
+                                        kernel_size=3,
+                                        padding=1,
+                                        stride=1,
+                                        bias=not conv_norm,
+                                        norm=get_norm(conv_norm, conv_dim),
+                                        activation=F.relu)
 
-        self.downsample = Conv2d(
-            conv_dim, conv_dim,
-            kernel_size=3,
-            padding=1,
-            stride=2,
-            bias=not conv_norm,
-            norm=get_norm(conv_norm, conv_dim),
-            activation=F.relu
-        )
+        self.downsample = Conv2d(conv_dim,
+                                 conv_dim,
+                                 kernel_size=3,
+                                 padding=1,
+                                 stride=2,
+                                 bias=not conv_norm,
+                                 norm=get_norm(conv_norm, conv_dim),
+                                 activation=F.relu)
         self.db_fcns = []
         cur_channels = input_shape.channels
         for k in range(num_db_conv):
@@ -251,37 +222,47 @@ class DBPreservingHead(nn.Module):
             self.db_fcns.append(conv)
             cur_channels = conv_dim
 
-        self.mask_to_db = Conv2d(
-            conv_dim, conv_dim,
-            kernel_size=1,
-            padding=0,
-            stride=1,
-            bias=not conv_norm,
-            norm=get_norm(conv_norm, conv_dim),
-            activation=F.relu
-        )
+        self.mask_to_db = Conv2d(conv_dim,
+                                 conv_dim,
+                                 kernel_size=1,
+                                 padding=0,
+                                 stride=1,
+                                 bias=not conv_norm,
+                                 norm=get_norm(conv_norm, conv_dim),
+                                 activation=F.relu)
 
-        self.db_to_mask = Conv2d(
-            conv_dim, conv_dim,
-            kernel_size=1,
-            padding=0,
-            stride=1,
-            bias=not conv_norm,
-            norm=get_norm(conv_norm, conv_dim),
-            activation=F.relu
-        )
+        self.db_to_mask = Conv2d(conv_dim,
+                                 conv_dim,
+                                 kernel_size=1,
+                                 padding=0,
+                                 stride=1,
+                                 bias=not conv_norm,
+                                 norm=get_norm(conv_norm, conv_dim),
+                                 activation=F.relu)
 
-        self.mask_deconv = ConvTranspose2d(
-            conv_dim, conv_dim, kernel_size=2, stride=2, padding=0
-        )
-        self.mask_predictor = Conv2d(cur_channels, num_classes, kernel_size=1, stride=1, padding=0)
+        self.mask_deconv = ConvTranspose2d(conv_dim,
+                                           conv_dim,
+                                           kernel_size=2,
+                                           stride=2,
+                                           padding=0)
+        self.mask_predictor = Conv2d(cur_channels,
+                                     num_classes,
+                                     kernel_size=1,
+                                     stride=1,
+                                     padding=0)
 
-        self.db_deconv = ConvTranspose2d(
-            conv_dim, conv_dim, kernel_size=2, stride=2, padding=0
-        )
-        self.db_predictor = Conv2d(cur_channels, num_classes, kernel_size=1, stride=1, padding=0)
+        self.db_deconv = ConvTranspose2d(conv_dim,
+                                         conv_dim,
+                                         kernel_size=2,
+                                         stride=2,
+                                         padding=0)
+        self.db_predictor = Conv2d(cur_channels,
+                                   num_classes,
+                                   kernel_size=1,
+                                   stride=1,
+                                   padding=0)
 
-        for layer in self.mask_fcns + self.db_fcns +\
+        for layer in self.mask_fcns + self.db_fcns + \
                      [self.mask_deconv, self.db_deconv, self.db_to_mask, self.mask_to_db,
                       self.mask_final_fusion, self.downsample]:
             weight_init.c2_msra_fill(layer)
@@ -307,19 +288,25 @@ class DBPreservingHead(nn.Module):
         mask_features = self.mask_final_fusion(mask_features)
         # mask prediction
         mask_features = F.relu(self.mask_deconv(mask_features))
-        binary_logits = self.mask_predictor(mask_features).sigmoid()
+        probability_logits = self.mask_predictor(mask_features).sigmoid()
         # db prediction
         db_features = F.relu(self.db_deconv(db_features))
         threshold_logits = self.db_predictor(db_features).sigmoid()
-        
-        thresh_binary = self.step_function(binary_logits, threshold_logits)
+
+        thresh_binary = self.step_function(probability_logits, threshold_logits)
         if self.training:
-            loss_mask, loss_db = db_preserving_mask_loss(
-                binary_logits, threshold_logits, thresh_binary, instances)
-            return {"loss_mask": loss_mask,
-                    "loss_db": loss_db}
+            loss_probability, loss_threshold, loss_threshold_binary = db_preserving_mask_loss(
+                probability_logits, threshold_logits, thresh_binary, instances)
+            return {
+                "loss_binary": loss_probability,
+                "loss_threshold": loss_threshold,
+                "loss_threshold_binary": loss_threshold_binary
+            }
         else:
-            mask_rcnn_inference(mask_logits, instances)
+            if self.adaptive:
+                mask_rcnn_inference(thresh_binary, instances)
+            else:
+                mask_rcnn_inference(probability_logits, instances)
             return instances
 
 
