@@ -70,7 +70,7 @@ Run on multiple machines:
 """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--config-file", default="configs/COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml", metavar="FILE", help="path to config file")
+    parser.add_argument("--config-file", default="projects/DBMaskR-CNN/configs/bmask_rcnn_R_50_FPN_1x.yaml", metavar="FILE", help="path to config file")
     parser.add_argument(
         "--resume",
         action="store_true",

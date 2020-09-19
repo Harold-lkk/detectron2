@@ -9,5 +9,5 @@ def add_db_preserving_config(cfg):
     cfg.MODEL.DB_MASK_HEAD.POOLER_RESOLUTION = 28
     cfg.MODEL.DB_MASK_HEAD.IN_FEATURES = ("p2",)
     cfg.MODEL.DB_MASK_HEAD.NUM_CONV = 2
-    cfg.MODEL.DB_MASK_HEAD.DB_MASK_HEAD = True
+    cfg.MODEL.DB_MASK_HEAD.ADAPTIVE = True
 

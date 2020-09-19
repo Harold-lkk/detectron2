@@ -164,13 +164,13 @@ class DBPreservingHead(nn.Module):
         conv_dim = cfg.MODEL.ROI_MASK_HEAD.CONV_DIM
         num_conv = cfg.MODEL.ROI_MASK_HEAD.NUM_CONV
         conv_norm = cfg.MODEL.ROI_MASK_HEAD.NORM
-        num_db_conv = cfg.MODEL.BOUNDARY_MASK_HEAD.NUM_CONV
+        num_db_conv = cfg.MODEL.DB_MASK_HEAD.NUM_CONV
         num_classes = cfg.MODEL.ROI_HEADS.NUM_CLASSES
         if cfg.MODEL.ROI_MASK_HEAD.CLS_AGNOSTIC_MASK:
             num_classes = 1
-        self.adaptive = cfg.MODEL.DB_MASK_HEAD.DB_MASK_HEAD
+        self.adaptive = cfg.MODEL.DB_MASK_HEAD.ADAPTIVE
         self.fusion = None
-
+        self.k = 50
         self.mask_fcns = []
         cur_channels = input_shape.channels
         for k in range(num_conv):
@@ -309,6 +309,119 @@ class DBPreservingHead(nn.Module):
                 mask_rcnn_inference(probability_logits, instances)
             return instances
 
+    def step_function(self, x, y):
+        return torch.reciprocal(1 + torch.exp(-self.k * (x - y)))
 
-def step_function(self, x, y):
-    return torch.reciprocal(1 + torch.exp(-self.k * (x - y)))
+
+@ROI_MASK_HEAD_REGISTRY.register()
+class DBMASKHead(nn.Module):
+    def __init__(self, cfg, input_shape: ShapeSpec):
+        super(DBMASKHead, self).__init__()
+
+        conv_dim = cfg.MODEL.ROI_MASK_HEAD.CONV_DIM
+        num_conv = cfg.MODEL.ROI_MASK_HEAD.NUM_CONV
+        conv_norm = cfg.MODEL.ROI_MASK_HEAD.NORM
+        num_db_conv = cfg.MODEL.DB_MASK_HEAD.NUM_CONV
+        num_classes = cfg.MODEL.ROI_HEADS.NUM_CLASSES
+        if cfg.MODEL.ROI_MASK_HEAD.CLS_AGNOSTIC_MASK:
+            num_classes = 1
+        self.adaptive = cfg.MODEL.DB_MASK_HEAD.ADAPTIVE
+        self.fusion = True
+        self.k = 50
+        self.mask_fcns = []
+        cur_channels = input_shape.channels
+        for k in range(num_conv):
+            conv = Conv2d(
+                cur_channels,
+                conv_dim,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=not conv_norm,
+                norm=get_norm(conv_norm, conv_dim),
+                activation=F.relu,
+            )
+            self.add_module("mask_fcn{}".format(k + 1), conv)
+            self.mask_fcns.append(conv)
+            cur_channels = conv_dim
+
+        self.db_fcns = []
+        if self.fusion:
+            cur_channels = input_shape.channels + num_classes
+        else:
+            cur_channels = input_shape.channels
+        for k in range(num_db_conv):
+            conv = Conv2d(
+                cur_channels,
+                conv_dim,
+                kernel_size=3,
+                stride=1,
+                padding=1,
+                bias=not conv_norm,
+                norm=get_norm(conv_norm, conv_dim),
+                activation=F.relu,
+            )
+            self.add_module("db_fcn{}".format(k + 1), conv)
+            self.db_fcns.append(conv)
+            cur_channels = conv_dim
+
+        self.mask_deconv = ConvTranspose2d(conv_dim,
+                                           conv_dim,
+                                           kernel_size=2,
+                                           stride=2,
+                                           padding=0)
+        self.mask_predictor = Conv2d(cur_channels,
+                                     num_classes,
+                                     kernel_size=1,
+                                     stride=1,
+                                     padding=0)
+
+        self.threshold_predictor = Conv2d(cur_channels,
+                                          num_classes,
+                                          kernel_size=1,
+                                          stride=1,
+                                          padding=0)
+
+        for layer in self.mask_fcns + self.db_fcns + [self.mask_deconv]:
+            weight_init.c2_msra_fill(layer)
+        # use normal distribution initialization for mask prediction layer
+        nn.init.normal_(self.mask_predictor.weight, std=0.001)
+        nn.init.normal_(self.threshold_predictor.weight, std=0.001)
+        if self.mask_predictor.bias is not None:
+            nn.init.constant_(self.mask_predictor.bias, 0)
+        if self.threshold_predictor.bias is not None:
+            nn.init.constant_(self.threshold_predictor.bias, 0)
+
+    def forward(self, mask_features, threshold_features, instances: List[Instances]):
+        for layer in self.mask_fcns:
+            mask_features = layer(mask_features)
+        # probability
+        mask_features = F.relu(self.mask_deconv(mask_features))
+        probability_logits = self.mask_predictor(mask_features).sigmoid()
+        
+        if self.fusion:
+            threshold_features = torch.cat((threshold_features, probability_logits), 1)
+        for layer in self.db_fcns:
+            threshold_features = layer(threshold_features)
+        # threshold prediction
+        threshold_logits = self.threshold_predictor(threshold_features).sigmoid()
+        
+        thresh_binary = self.step_function(probability_logits, threshold_logits)
+
+        if self.training:
+            loss_probability, loss_threshold, loss_threshold_binary = db_preserving_mask_loss(
+                probability_logits, threshold_logits, thresh_binary, instances)
+            return {
+                "loss_binary": loss_probability,
+                # "loss_threshold": loss_threshold,
+                "loss_threshold_binary": loss_threshold_binary
+            }
+        else:
+            if self.adaptive:
+                mask_rcnn_inference(thresh_binary, instances)
+            else:
+                mask_rcnn_inference(probability_logits, instances)
+            return instances
+
+    def step_function(self, x, y):
+        return torch.reciprocal(1 + torch.exp(-self.k * (x - y)))

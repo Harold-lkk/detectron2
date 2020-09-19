@@ -1,9 +1,15 @@
-_BASE_: Base-BMask-R-CNN-FPN.yaml
+_BASE_: Base-DBMask-R-CNN-FPN.yaml
 MODEL:
   WEIGHTS: detectron2://ImageNetPretrained/MSRA/R-50.pkl
   MASK_ON: true
   RESNETS:
     DEPTH: 50
+  ROI_HEADS:
+    NAME: CascadeBoundaryROIHeads
+  ROI_BOX_HEAD:
+    CLS_AGNOSTIC_BBOX_REG: True
+  RPN:
+    POST_NMS_TOPK_TRAIN: 2000
 INPUT:
   MIN_SIZE_TRAIN: (800,)
 TEST:
@@ -16,4 +22,4 @@ SOLVER:
   BASE_LR: 0.02
   STEPS: (60000, 80000)
   MAX_ITER: 90000
-OUTPUT_DIR: "output/dbmask_rcnn_r50_1x"
+OUTPUT_DIR: "output/cascade_dbmask_rcnn_r50_1x"

@@ -39,6 +39,7 @@ from detectron2.evaluation import (
 )
 from detectron2.modeling import GeneralizedRCNNWithTTA
 from detectron2.data.datasets import register_coco_instances
+from dbmaskrcnn import add_db_preserving_config
 register_coco_instances(
     "container_origin_1", {},
     "/media/liukuikun/work/local/data/image_segmentation/containerseg_12classes_v2/origin/1/json/1_coco_all.json",
@@ -126,6 +127,7 @@ def setup(args):
     Create configs and perform basic setups.
     """
     cfg = get_cfg()
+    add_db_preserving_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
     cfg.DATASETS.TRAIN = ("container_origin_1",)
@@ -135,7 +137,7 @@ def setup(args):
     cfg.SOLVER.IMS_PER_BATCH = 2
     cfg.SOLVER.BASE_LR = 0.002
     cfg.SOLVER.LR_SCHEDULER_NAME = "WarmupCosineLR"
-    cfg.SOLVER.MAX_ITER = 180000
+    cfg.SOLVER.MAX_ITER = 100000
     cfg.freeze()
     default_setup(cfg, args)
     return cfg
