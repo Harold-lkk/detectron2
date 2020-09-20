@@ -11,6 +11,45 @@ from detectron2.utils.events import get_event_storage
 
 from detectron2.modeling.roi_heads import ROI_MASK_HEAD_REGISTRY
 # from detectron2.modeling.roi_heads.mask_head import mask_rcnn_inference
+import cv2
+import numpy as np
+
+
+def vis_mid(probability_logits, threshold_logits, thresh_binary_logits, pred_instances):
+    num_masks = probability_logits.shape[0]
+    class_pred = cat([i.pred_classes for i in pred_instances])
+    indices = torch.arange(num_masks, device=class_pred.device)
+    # mask_probs_pred.shape: (B, 1, Hmask, Wmask)
+    num_boxes_per_image = [len(i) for i in pred_instances]
+    probability_pred = probability_logits[indices, class_pred][:, None]
+    probability_pred = probability_pred.split(num_boxes_per_image, dim=0)
+
+    threshold_pred = threshold_logits[indices, class_pred][:, None]
+    threshold_pred = threshold_pred.split(num_boxes_per_image, dim=0)
+
+    thresh_binary_pred = thresh_binary_logits[indices, class_pred][:, None]
+    thresh_binary_pred = thresh_binary_pred.split(num_boxes_per_image, dim=0)
+
+    for p_pred, t_pred, t_b_pred in zip(probability_pred, threshold_pred, thresh_binary_pred):
+        p_pred = p_pred.cpu().data.numpy()[0][0] * 255
+        t_pred = t_pred.cpu().data.numpy()[0][0] * 255
+        t_b_pred = t_b_pred.cpu().data.numpy()[0][0] * 255
+
+        p_pred = p_pred.astype(np.uint8)
+        t_pred = t_pred.astype(np.uint8)
+        t_b_pred = t_b_pred.astype(np.uint8)
+
+        cv2.imwrite('p_pred.jpg', p_pred)
+        p_pred_map = cv2.applyColorMap(p_pred, cv2.COLORMAP_JET)
+        cv2.imwrite('p_pred_map.jpg', p_pred_map)
+
+        cv2.imwrite('thresh.jpg', t_pred)
+        t_pred_map = cv2.applyColorMap(t_pred, cv2.COLORMAP_JET)
+        cv2.imwrite('color_thresh.jpg', t_pred_map)
+
+        cv2.imwrite('t_b_pred.jpg', t_b_pred)
+        t_b_pred_map = cv2.applyColorMap(t_b_pred, cv2.COLORMAP_JET)
+        cv2.imwrite('color_t_b_pred.jpg', t_b_pred_map)
 
 
 def mask_rcnn_inference(pred_mask_logits: torch.Tensor, pred_instances: List[Instances]):
@@ -22,7 +61,7 @@ def mask_rcnn_inference(pred_mask_logits: torch.Tensor, pred_instances: List[Ins
         num_masks = pred_mask_logits.shape[0]
         class_pred = cat([i.pred_classes for i in pred_instances])
         indices = torch.arange(num_masks, device=class_pred.device)
-        mask_probs_pred = pred_mask_logits[indices, class_pred][:, None].sigmoid()
+        mask_probs_pred = pred_mask_logits[indices, class_pred][:, None]
     # mask_probs_pred.shape: (B, 1, Hmask, Wmask)
 
     num_boxes_per_image = [len(i) for i in pred_instances]
@@ -73,7 +112,7 @@ def db_preserving_mask_loss(probability_logits,
                             threshold_logits,
                             thresh_binary,
                             instances,
-                            threshold_on=False,
+                            threshold_on=True,
                             vis_period=0):
     cls_agnostic_mask = probability_logits.size(1) == 1
     total_num_masks = thresh_binary.size(0)
@@ -326,7 +365,7 @@ class DBMASKHead(nn.Module):
         if cfg.MODEL.ROI_MASK_HEAD.CLS_AGNOSTIC_MASK:
             num_classes = 1
         self.adaptive = cfg.MODEL.DB_MASK_HEAD.ADAPTIVE
-        self.fusion = True
+        self.fusion = False
         self.k = 50
         self.mask_fcns = []
         cur_channels = input_shape.channels
@@ -398,22 +437,22 @@ class DBMASKHead(nn.Module):
         # probability
         mask_features = F.relu(self.mask_deconv(mask_features))
         probability_logits = self.mask_predictor(mask_features).sigmoid()
-        
+
         if self.fusion:
             threshold_features = torch.cat((threshold_features, probability_logits), 1)
         for layer in self.db_fcns:
             threshold_features = layer(threshold_features)
         # threshold prediction
         threshold_logits = self.threshold_predictor(threshold_features).sigmoid()
-        
-        thresh_binary = self.step_function(probability_logits, threshold_logits)
 
+        thresh_binary = self.step_function(probability_logits, threshold_logits)
+        # vis_mid(probability_logits, threshold_logits, thresh_binary, instances)
         if self.training:
             loss_probability, loss_threshold, loss_threshold_binary = db_preserving_mask_loss(
                 probability_logits, threshold_logits, thresh_binary, instances)
             return {
                 "loss_binary": loss_probability,
-                # "loss_threshold": loss_threshold,
+                "loss_threshold": loss_threshold,
                 "loss_threshold_binary": loss_threshold_binary
             }
         else:

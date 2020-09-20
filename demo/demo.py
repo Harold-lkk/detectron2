@@ -12,7 +12,7 @@ from detectron2.data.detection_utils import read_image
 from detectron2.utils.logger import setup_logger
 
 from predictor import VisualizationDemo
-
+from config import add_db_preserving_config
 # constants
 WINDOW_NAME = "COCO detections"
 
@@ -20,13 +20,15 @@ WINDOW_NAME = "COCO detections"
 def setup_cfg(args):
     # load config from file and command-line arguments
     cfg = get_cfg()
+    add_db_preserving_config(cfg)
     cfg.merge_from_file(args.config_file)
     cfg.merge_from_list(args.opts)
+    
     # Set score_threshold for builtin models
     cfg.MODEL.RETINANET.SCORE_THRESH_TEST = args.confidence_threshold
     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = args.confidence_threshold
     cfg.MODEL.PANOPTIC_FPN.COMBINE.INSTANCES_CONFIDENCE_THRESH = args.confidence_threshold
-    cfg.MODEL.WEIGHTS = "/media/liukuikun/work/repository/detectron2/checkpoint/pretrained/mask_rcnn_R_50_FPN_1x.pkl"
+    cfg.MODEL.WEIGHTS = "/media/liukuikun/work/repository/detectron2/checkpoint/model_0024999.pth"
     cfg.freeze()
     return cfg
 
@@ -35,7 +37,7 @@ def get_parser():
     parser = argparse.ArgumentParser(description="Detectron2 demo for builtin configs")
     parser.add_argument(
         "--config-file",
-        default="configs/COCO-InstanceSegmentation/mask_rcnn_R_50_FPN_1x.yaml",
+        default="/media/liukuikun/work/repository/detectron2/projects/DBMaskR-CNN/configs/dbmask_rcnn_R_50_FPN_1x.yaml",
         metavar="FILE",
         help="path to config file",
     )
